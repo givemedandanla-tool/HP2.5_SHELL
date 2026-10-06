@@ -1,6 +1,8 @@
 name: Governance Gate
 
 on:
+  push:
+    branches: [main]
   pull_request_target:
     branches: [main]
 
@@ -8,7 +10,19 @@ permissions:
   contents: read
 
 jobs:
+  trusted-self-test:
+    if: github.event_name == 'push'
+    name: governance-gate-self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile trusted validator
+        run: python -m py_compile gate/approval_manifest.py gate/validate.py
+
   governance-gate:
+    if: github.event_name == 'pull_request_target'
     name: governance-gate
     runs-on: ubuntu-latest
     steps:
