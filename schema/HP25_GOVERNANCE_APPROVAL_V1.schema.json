@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hp25:governance-approval:v1",
+  "title": "HP25_GOVERNANCE_APPROVAL_V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "source_repository_id",
+    "source_repository_full_name",
+    "source_commit_sha",
+    "source_main_observed_sha",
+    "candidate_work_id",
+    "candidate_generation",
+    "audit_generation",
+    "candidate_state",
+    "exact_ci_run_id",
+    "exact_ci_head_sha",
+    "exact_ci_conclusion",
+    "independent_audit_id",
+    "independent_audit_result",
+    "independent_auditor_subject",
+    "independent_audit_receipt_sha256",
+    "writer_subject",
+    "blocking_findings",
+    "approved_revision",
+    "policy_version",
+    "authority_id",
+    "created_at",
+    "source_evidence_fingerprint",
+    "manifest_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "HP25_GOVERNANCE_APPROVAL_V1"
+    },
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_repository_id": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "source_repository_full_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "source_commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_main_observed_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidate_work_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "audit_generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "candidate_state": {
+      "const": "READY_FOR_APPROVAL"
+    },
+    "exact_ci_run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "exact_ci_head_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "exact_ci_conclusion": {
+      "const": "success"
+    },
+    "independent_audit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "independent_audit_result": {
+      "const": "PASS"
+    },
+    "independent_auditor_subject": {
+      "type": "string",
+      "minLength": 1
+    },
+    "independent_audit_receipt_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "writer_subject": {
+      "type": "string",
+      "minLength": 1
+    },
+    "blocking_findings": {
+      "const": 0
+    },
+    "approved_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "policy_version": {
+      "const": "HP25-GOVERNANCE-SHELL-POLICY-V1"
+    },
+    "authority_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_evidence_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "manifest_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

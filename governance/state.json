@@ -1,0 +1,12 @@
+{
+  "schema_version": "HP25_GOVERNANCE_STATE_V1",
+  "mode": "EXPERIMENTAL_SPIKE",
+  "current_generation": 8,
+  "policy_version": "HP25-GOVERNANCE-SHELL-POLICY-V1",
+  "allowed_authority_ids": [
+    "HUMAN-20261006-ROOT-F-001-SCHEME-C-001"
+  ],
+  "approved_revision": null,
+  "last_approval_id": null,
+  "note": "Synthetic Scheme C spike state only; not production approval."
+}
