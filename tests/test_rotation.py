@@ -27,10 +27,10 @@ class RotationTests(unittest.TestCase):
         }
         self.new = copy.deepcopy(self.old)
         self.new["current_generation"] = 10
-        self.new["allowed_authority_ids"] = ["HUMAN-NEW"]
+        self.new["allowed_authority_ids"] = ["HUMAN-SCHEME-C-G10-UNIQUE0001"]
         self.new["authority_envelopes"] = {
-            "HUMAN-NEW": {
-                "authority_id": "HUMAN-NEW",
+            "HUMAN-SCHEME-C-G10-UNIQUE0001": {
+                "authority_id": "HUMAN-SCHEME-C-G10-UNIQUE0001",
                 "parent_authority_id": "HUMAN-OWNER",
                 "subject_id": "HP25-GPT-ROOT-INTEGRATOR",
                 "work_id": "HP25-PROGRESSIVE-SYSTEM-CONSOLIDATION-001",
@@ -79,29 +79,82 @@ class RotationTests(unittest.TestCase):
         self.check_denied()
 
     def test_unbounded_authority_rejected(self):
-        self.new["authority_envelopes"]["HUMAN-NEW"]["valid_until"] = (
+        self.new["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["valid_until"] = (
             self.now + timedelta(days=2)).isoformat()
         self.check_denied()
 
     def test_expired_authority_rejected(self):
-        self.new["authority_envelopes"]["HUMAN-NEW"]["valid_until"] = (
+        self.new["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["valid_until"] = (
             self.now - timedelta(seconds=1)).isoformat()
         self.check_denied()
 
     def test_self_audit_rejected(self):
-        self.new["authority_envelopes"]["HUMAN-NEW"]["independent_auditor_subject"] = "WRITER-A"
+        self.new["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["independent_auditor_subject"] = "WRITER-A"
         self.check_denied()
 
     def test_bad_audit_receipt_rejected(self):
-        self.new["authority_envelopes"]["HUMAN-NEW"]["independent_audit_receipt_sha256"] = "not-a-digest"
+        self.new["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["independent_audit_receipt_sha256"] = "not-a-digest"
         self.check_denied()
 
     def test_missing_parent_rejected(self):
-        self.new["authority_envelopes"]["HUMAN-NEW"]["parent_authority_id"] = "SELF"
+        self.new["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["parent_authority_id"] = "SELF"
         self.check_denied()
 
     def test_wrong_subject_sha_rejected(self):
-        self.new["authority_envelopes"]["HUMAN-NEW"]["exact_subject"] = "not-a-commit"
+        self.new["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["exact_subject"] = "not-a-commit"
+        self.check_denied()
+
+
+    def test_authority_from_two_generations_ago_rejected(self):
+        # G9 -> G10 and G10 -> G11 pass; G10 ID may not recur in G12.
+        g10 = copy.deepcopy(self.new)
+        self.assertTrue(evaluate_rotation(self.old, g10, self.now)["allowed"])
+        g11 = copy.deepcopy(g10)
+        g11["current_generation"] = 11
+        g11["allowed_authority_ids"] = ["HUMAN-SCHEME-C-G11-UNIQUE0002"]
+        env = g11["authority_envelopes"].pop("HUMAN-SCHEME-C-G10-UNIQUE0001")
+        env["authority_id"] = g11["allowed_authority_ids"][0]
+        env["generation"] = 11
+        g11["authority_envelopes"][env["authority_id"]] = env
+        self.assertTrue(evaluate_rotation(g10, g11, self.now)["allowed"])
+        g12 = copy.deepcopy(g11)
+        g12["current_generation"] = 12
+        g12["allowed_authority_ids"] = ["HUMAN-SCHEME-C-G10-UNIQUE0001"]
+        env = g12["authority_envelopes"].pop("HUMAN-SCHEME-C-G11-UNIQUE0002")
+        env["authority_id"] = g12["allowed_authority_ids"][0]
+        env["generation"] = 12
+        g12["authority_envelopes"][env["authority_id"]] = env
+        decision = evaluate_rotation(g11, g12, self.now)
+        self.assertFalse(decision["allowed"])
+        self.assertIn("authority_id_generation_binding", decision["reasons"])
+
+    def test_forged_generation_in_authority_id_rejected(self):
+        wrong = "HUMAN-SCHEME-C-G11-UNIQUE0001"
+        self.new["allowed_authority_ids"] = [wrong]
+        env = self.new["authority_envelopes"].pop("HUMAN-SCHEME-C-G10-UNIQUE0001")
+        env["authority_id"] = wrong
+        self.new["authority_envelopes"][wrong] = env
+        self.check_denied()
+
+    def test_legacy_unbound_authority_id_rejected(self):
+        wrong = "HUMAN-UNBOUND-UNIQUE0001"
+        self.new["allowed_authority_ids"] = [wrong]
+        env = self.new["authority_envelopes"].pop("HUMAN-SCHEME-C-G10-UNIQUE0001")
+        env["authority_id"] = wrong
+        self.new["authority_envelopes"][wrong] = env
+        self.check_denied()
+
+    def test_unauthorized_history_field_rejected(self):
+        self.new["used_authority_ids"] = ["HUMAN-OLD"]
+        self.check_denied()
+
+    def test_history_immutable_if_present_rejected(self):
+        self.old["used_authority_ids"] = ["HUMAN-OLD"]
+        self.new["used_authority_ids"] = []
+        self.check_denied()
+
+    def test_formal_mode_change_not_permitted_during_rotation(self):
+        self.new["mode"] = "FORMAL_SCHEME_C"
         self.check_denied()
 
 class ExactOwnerReviewTests(unittest.TestCase):
@@ -154,17 +207,18 @@ class ApprovalEnvelopeTests(unittest.TestCase):
             "blocking_findings": 0,
             "approved_revision": HEAD,
             "policy_version": "HP25-GOVERNANCE-SHELL-POLICY-V1",
-            "authority_id": "HUMAN-NEW",
+            "authority_id": "HUMAN-SCHEME-C-G10-UNIQUE0001",
             "created_at": now.isoformat(),
             "source_evidence_fingerprint": "sha256:" + "c" * 64,
         }
         self.state = {
+            "mode": "FORMAL_SCHEME_C",
             "current_generation": 10,
             "policy_version": "HP25-GOVERNANCE-SHELL-POLICY-V1",
-            "allowed_authority_ids": ["HUMAN-NEW"],
+            "allowed_authority_ids": ["HUMAN-SCHEME-C-G10-UNIQUE0001"],
             "authority_envelopes": {
-                "HUMAN-NEW": {
-                    "authority_id": "HUMAN-NEW",
+                "HUMAN-SCHEME-C-G10-UNIQUE0001": {
+                    "authority_id": "HUMAN-SCHEME-C-G10-UNIQUE0001",
                     "parent_authority_id": "HUMAN-OWNER",
                     "work_id": self.manifest["candidate_work_id"],
                     "exact_subject": HEAD,
@@ -185,21 +239,41 @@ class ApprovalEnvelopeTests(unittest.TestCase):
     def test_exact_valid_approval(self):
         self.assertTrue(evaluate(self.manifest, self.state)["allowed"])
 
+
+    def test_experimental_mode_rejects_real_exact_approval(self):
+        self.state["mode"] = "EXPERIMENTAL_SPIKE"
+        decision = evaluate(self.manifest, self.state)
+        self.assertFalse(decision["allowed"])
+        self.assertIn("scheme_c_formal_mode_not_active", decision["reasons"])
+
+    def test_mode_missing_rejected(self):
+        self.state.pop("mode")
+        self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
+
+    def test_unknown_mode_rejected(self):
+        self.state["mode"] = "ALMOST_PRODUCTION"
+        self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
+
+    def test_note_cannot_override_experimental_mode(self):
+        self.state["mode"] = "EXPERIMENTAL_SPIKE"
+        self.state["note"] = "Formally approved by text"
+        self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
+
     def test_missing_envelope_rejected(self):
         self.state["authority_envelopes"] = {}
         self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
 
     def test_expired_envelope_rejected(self):
-        self.state["authority_envelopes"]["HUMAN-NEW"]["valid_until"] = (
+        self.state["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["valid_until"] = (
             datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
 
     def test_subject_mismatch_rejected(self):
-        self.state["authority_envelopes"]["HUMAN-NEW"]["exact_subject"] = "d" * 40
+        self.state["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["exact_subject"] = "d" * 40
         self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
 
     def test_receipt_mismatch_rejected(self):
-        self.state["authority_envelopes"]["HUMAN-NEW"]["independent_audit_receipt_sha256"] = (
+        self.state["authority_envelopes"]["HUMAN-SCHEME-C-G10-UNIQUE0001"]["independent_audit_receipt_sha256"] = (
             "sha256:" + "f" * 64)
         self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
 
