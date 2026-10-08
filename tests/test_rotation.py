@@ -157,6 +157,24 @@ class RotationTests(unittest.TestCase):
         self.new["mode"] = "FORMAL_SCHEME_C"
         self.check_denied()
 
+class TrustedBotWorkflowStaticTests(unittest.TestCase):
+    def test_dispatch_is_protected_main_owner_only(self):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/governance-gate.yml").read_text("utf-8")
+        self.assertIn("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner", workflow)
+        self.assertIn("pull-requests: write", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("pull-requests: write\n\njobs:", workflow)
+
+    def test_bot_branch_data_never_executed_by_dispatch(self):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/governance-gate.yml").read_text("utf-8")
+        bot_job = workflow.split("  create-bot-rotation-pr:", 1)[1]
+        self.assertIn('[[ "$changed" == "governance/state.json" ]]', bot_job)
+        self.assertNotIn("python candidate/", bot_job)
+        self.assertNotIn("run: bash candidate/", bot_job)
+        self.assertIn('[[ "$author" == \'github-actions[bot]\'', bot_job)
+
 class ExactOwnerReviewTests(unittest.TestCase):
     def setUp(self):
         self.reviews = [{
