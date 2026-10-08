@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -112,6 +113,37 @@ def evaluate(manifest, state):
     allowed_authorities = state.get("allowed_authority_ids", [])
     if manifest["authority_id"] not in allowed_authorities:
         reasons.append("authority")
+
+    # The protected state must carry a finite Human-parented authority record.
+    # Merely listing an authority ID must not be sufficient for approval.
+    envelopes = state.get("authority_envelopes", {})
+    envelope = envelopes.get(manifest["authority_id"]) if isinstance(envelopes, dict) else None
+    if not isinstance(envelope, dict):
+        reasons.append("authority_envelope_missing")
+    else:
+        expected = {
+            "authority_id": manifest["authority_id"],
+            "parent_authority_id": "HUMAN-OWNER",
+            "work_id": manifest["candidate_work_id"],
+            "exact_subject": manifest["approved_revision"],
+            "generation": manifest["candidate_generation"],
+            "writer_subject": manifest["writer_subject"],
+            "independent_auditor_subject": manifest["independent_auditor_subject"],
+            "independent_audit_receipt_sha256": manifest["independent_audit_receipt_sha256"],
+        }
+        if any(envelope.get(key) != value for key, value in expected.items()):
+            reasons.append("authority_envelope_binding")
+        try:
+            start = datetime.fromisoformat(envelope["valid_from"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(envelope["valid_until"].replace("Z", "+00:00"))
+            created = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if any(dt.tzinfo is None for dt in (start, end, created)):
+                reasons.append("authority_timezone")
+            elif not (start <= created < end and start <= now < end):
+                reasons.append("authority_expired_or_outside_interval")
+        except (KeyError, ValueError, TypeError, AttributeError):
+            reasons.append("authority_time_invalid")
 
     if compute_manifest_sha256(manifest) != manifest["manifest_sha256"]:
         reasons.append("manifest_hash")
