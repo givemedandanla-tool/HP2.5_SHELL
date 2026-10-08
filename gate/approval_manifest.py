@@ -110,6 +110,11 @@ def evaluate(manifest, state):
     if manifest["policy_version"] != state.get("policy_version"):
         reasons.append("policy_version")
 
+    # Production activation is a distinct, protected Human-authorized lifecycle.
+    # Note text or otherwise-valid spike evidence cannot authorize an approval.
+    if state.get("mode") != "FORMAL_SCHEME_C":
+        reasons.append("scheme_c_formal_mode_not_active")
+
     allowed_authorities = state.get("allowed_authority_ids", [])
     if manifest["authority_id"] not in allowed_authorities:
         reasons.append("authority")
