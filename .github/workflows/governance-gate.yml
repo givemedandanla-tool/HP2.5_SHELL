@@ -3,10 +3,11 @@ name: Governance Gate
 on:
   push:
     branches: [main, 'maintenance/**']
+  # Always use the protected default-branch workflow; never trust review-event
+  # workflows or candidate PR code for a required governance check.
   pull_request_target:
+    types: [opened, synchronize, reopened]
     branches: [main]
-  pull_request_review:
-    types: [submitted, dismissed]
   # Only the repository Owner can invoke this on the protected default branch.
   # This becomes trusted ONLY after a separately reviewed, authorized merge.
   workflow_dispatch:
@@ -39,7 +40,7 @@ jobs:
           python -m unittest discover -s tests -v
 
   governance-gate:
-    if: github.event_name != 'push' && github.event.pull_request.base.ref == 'main'
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'main'
     name: governance-gate
     runs-on: ubuntu-latest
     steps:
