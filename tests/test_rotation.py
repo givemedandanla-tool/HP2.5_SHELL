@@ -175,6 +175,20 @@ class TrustedBotWorkflowStaticTests(unittest.TestCase):
         self.assertNotIn("run: bash candidate/", bot_job)
         self.assertIn('[[ "$author" == \'github-actions[bot]\'', bot_job)
 
+    def test_required_gate_event_is_trusted_default_branch_only(self):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/governance-gate.yml").read_text("utf-8")
+        # Owner-initiated PR reopen must trigger protected-base pull_request_target,
+        # not the candidate merge-branch pull_request_review workflow.
+        self.assertIn("  pull_request_target:\n    types: [opened, synchronize, reopened]\n    branches: [main]", workflow)
+        self.assertNotIn("\n  pull_request_review:", workflow)
+        self.assertIn("if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'main'", workflow)
+        self.assertNotIn("github.event_name != 'push'", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", workflow)
+        self.assertIn("python trusted/gate/rotation.py", workflow)
+        self.assertIn("python trusted/gate/validate.py", workflow)
+        self.assertNotIn("python candidate/gate/", workflow)
+
 class ExactOwnerReviewTests(unittest.TestCase):
     def setUp(self):
         self.reviews = [{
