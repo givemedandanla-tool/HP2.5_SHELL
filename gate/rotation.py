@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 SHA40 = re.compile(r"^[a-f0-9]{40}$")
 HASH = re.compile(r"^sha256:[a-f0-9]{64}$")
 ID = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
+# A new Authority ID permanently encodes its unique issuing generation.
+GENERATION_BOUND_ID = re.compile(r"^HUMAN-SCHEME-C-G([1-9][0-9]*)-([A-Za-z0-9][A-Za-z0-9_.-]{7,79})$")
 ENVELOPE_KEYS = {
     "authority_id", "parent_authority_id", "subject_id", "work_id",
     "exact_subject", "generation", "valid_from", "valid_until",
@@ -57,6 +59,10 @@ def evaluate_rotation(before, after, now=None):
         reasons.append("invalid_authority_id")
     elif new_ids[0] in old_ids:
         reasons.append("authority_reused_or_renewed")
+    if new_ids and isinstance(new_ids[0], str):
+        match = GENERATION_BOUND_ID.fullmatch(new_ids[0])
+        if not match or not isinstance(current, int) or isinstance(current, bool) or int(match.group(1)) != current:
+            reasons.append("authority_id_generation_binding")
     records = after.get("authority_envelopes")
     if not isinstance(records, dict) or set(records) != set(new_ids):
         reasons.append("authority_envelope_set_mismatch")
