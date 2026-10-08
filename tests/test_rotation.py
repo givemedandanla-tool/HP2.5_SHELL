@@ -1,7 +1,12 @@
 """Fail-closed contract tests for the existing Scheme C trust boundary."""
 import copy
+import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import textwrap
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -173,7 +178,10 @@ class TrustedBotWorkflowStaticTests(unittest.TestCase):
         self.assertIn('[[ "$changed" == "governance/state.json" ]]', bot_job)
         self.assertNotIn("python candidate/", bot_job)
         self.assertNotIn("run: bash candidate/", bot_job)
-        self.assertIn('[[ "$author" == \'github-actions[bot]\'', bot_job)
+        self.assertNotIn('gh pr view "$url" --repo', bot_job)
+        self.assertIn('gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number"', bot_job)
+        self.assertIn('if ! verify_bot_pr_identity "$pr_json"; then', bot_job)
+        self.assertIn("41898282", bot_job)
 
     def test_required_gate_event_is_trusted_default_branch_only(self):
         from pathlib import Path
@@ -188,6 +196,66 @@ class TrustedBotWorkflowStaticTests(unittest.TestCase):
         self.assertIn("python trusted/gate/rotation.py", workflow)
         self.assertIn("python trusted/gate/validate.py", workflow)
         self.assertNotIn("python candidate/gate/", workflow)
+
+class BotRestIdentityRegressionTests(unittest.TestCase):
+    """Execute the real inline workflow verifier with synthetic REST responses."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/governance-gate.yml").read_text("utf-8")
+        match = re.search(r"(?ms)^          verify_bot_pr_identity\(\) \{\n.*?^          \}\n", workflow)
+        if not match:
+            raise AssertionError("trusted inline verifier is missing")
+        cls.validator = textwrap.dedent(match.group(0))
+        cls.head = "a" * 40
+        cls.branch = "rotation/hp25-scheme-c-g10-f001-e2e-001"
+        cls.repo = "givemedandanla-tool/HP2.5_SHELL"
+
+    def valid_payload(self):
+        return {
+            "user": {"login": "github-actions[bot]", "type": "Bot", "id": 41898282},
+            "head": {"sha": self.head, "ref": self.branch, "repo": {"full_name": self.repo}},
+            "base": {"ref": "main"},
+            "draft": True,
+        }
+
+    def run_verifier(self, data):
+        self.assertIsNotNone(shutil.which("bash"), "bash required for workflow test")
+        self.assertIsNotNone(shutil.which("jq"), "jq required for workflow test")
+        env = dict(os.environ)
+        env.update({"PR_JSON": json.dumps(data), "EXPECTED_HEAD": self.head,
+                    "ROTATION_BRANCH": self.branch, "GITHUB_REPOSITORY": self.repo})
+        script = "set -euo pipefail\n" + self.validator + "\nverify_bot_pr_identity \"$PR_JSON\"\n"
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
+
+    def test_live_rest_bot_author_and_exact_draft_pr_accepted(self):
+        result = self.run_verifier(self.valid_payload())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_spoofed_or_stale_rest_fields_denied(self):
+        changes = (
+            ("untrusted_login", ("user", "login"), "app/github-actions"),
+            ("owner_impersonation", ("user", "login"), "givemedandanla-tool"),
+            ("untrusted_type", ("user", "type"), "User"),
+            ("wrong_bot_id", ("user", "id"), 41898283),
+            ("stale_head", ("head", "sha"), "b" * 40),
+            ("untrusted_branch", ("head", "ref"), "rotation/other"),
+            ("untrusted_repository", ("head", "repo", "full_name"), "other/repo"),
+            ("wrong_base", ("base", "ref"), "unprotected"),
+            ("not_draft", ("draft",), False),
+            ("missing_author", ("user", "login"), None),
+        )
+        for label, path, value in changes:
+            with self.subTest(case=label):
+                data = self.valid_payload()
+                field = data
+                for key in path[:-1]:
+                    field = field[key]
+                field[path[-1]] = value
+                result = self.run_verifier(data)
+                self.assertNotEqual(result.returncode, 0, label)
+
 
 class ExactOwnerReviewTests(unittest.TestCase):
     def setUp(self):

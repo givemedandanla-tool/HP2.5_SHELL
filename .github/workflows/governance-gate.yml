@@ -124,10 +124,32 @@ jobs:
           url="$(gh pr create --repo "$GITHUB_REPOSITORY" --head "$ROTATION_BRANCH" --base main --draft \
             --title "[HP2.5] Scheme C state-only rotation (bot identity verification)" \
             --body "Bounded Scheme C state-only candidate. Created by trusted main workflow using GITHUB_TOKEN; requires separate GitHub Owner APPROVED review on exact head and independent required gate. Not a Scheme C PASS. Do not merge without independent authorization.")"
-          author="$(gh pr view "$url" --repo "$GITHUB_REPOSITORY" --json author --jq '.author.login')"
-          exact="$(gh pr view "$url" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')"
-          echo "CREATED_PR=$url AUTHOR=$author HEAD=$exact"
-          [[ "$author" == 'github-actions[bot]' && "$exact" == "$EXPECTED_HEAD" ]] || {
-            echo "DENY: actual PR author/head differs; do not review or merge"; exit 1;
+          # Query the authenticated GitHub REST PR resource, not the gh GraphQL
+          # user display name (which may render "app/github-actions").
+          verify_bot_pr_identity() {
+            local json="$1"
+            local author author_type author_id exact pr_branch pr_base pr_repo draft
+            author="$(jq -r '.user.login // empty' <<< "$json")"
+            author_type="$(jq -r '.user.type // empty' <<< "$json")"
+            author_id="$(jq -r '.user.id // empty' <<< "$json")"
+            exact="$(jq -r '.head.sha // empty' <<< "$json")"
+            pr_branch="$(jq -r '.head.ref // empty' <<< "$json")"
+            pr_base="$(jq -r '.base.ref // empty' <<< "$json")"
+            pr_repo="$(jq -r '.head.repo.full_name // empty' <<< "$json")"
+            draft="$(jq -r '.draft // empty' <<< "$json")"
+            [[ "$author" == 'github-actions[bot]' &&
+               "$author_type" == 'Bot' && "$author_id" == '41898282' &&
+               "$exact" == "$EXPECTED_HEAD" && "$pr_branch" == "$ROTATION_BRANCH" &&
+               "$pr_base" == 'main' && "$pr_repo" == "$GITHUB_REPOSITORY" &&
+               "$draft" == 'true' ]]
           }
-          echo "Bot identity verified; owner review and protected gate remain separate."
+          pr_number="$(sed -nE 's#^https://github[.]com/[^/]+/[^/]+/pull/([1-9][0-9]*)$#\1#p' <<< "$url")"
+          [[ -n "$pr_number" && "$url" == "https://github.com/$GITHUB_REPOSITORY/pull/$pr_number" ]] || {
+            echo "DENY: unexpected created PR URL; do not review or merge" >&2; exit 1;
+          }
+          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")"
+          if ! verify_bot_pr_identity "$pr_json"; then
+            echo "DENY: authenticated REST Bot identity or exact PR scope mismatch; do not review or merge" >&2
+            exit 1
+          fi
+          echo "Bot REST identity and exact draft PR scope verified; owner review and protected gate remain separate."
