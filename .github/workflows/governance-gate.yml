@@ -2,12 +2,15 @@ name: Governance Gate
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'maintenance/**']
   pull_request_target:
     branches: [main]
+  pull_request_review:
+    types: [submitted, dismissed]
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   trusted-self-test:
@@ -18,11 +21,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Compile trusted validator
-        run: python -m py_compile gate/approval_manifest.py gate/validate.py
+      - name: Compile and test trusted validators
+        run: |
+          python -m py_compile gate/approval_manifest.py gate/rotation.py gate/validate.py
+          python -m unittest discover -s tests -v
 
   governance-gate:
-    if: github.event_name == 'pull_request_target'
+    if: github.event_name != 'push' && github.event.pull_request.base.ref == 'main'
     name: governance-gate
     runs-on: ubuntu-latest
     steps:
@@ -41,19 +46,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Restrict candidate changes to the approval manifest
+      - name: Validate strictly separated approval or state-rotation candidate
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROTATION_PR_NUMBER: ${{ github.event.pull_request.number }}
+          ROTATION_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROTATION_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git -C candidate fetch origin "$BASE_SHA" --depth=1
           changed="$(git -C candidate diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          printf '%s\n' "$changed"
-          test "$changed" = "approval/manifest.json"
-
-      - name: Validate candidate manifest with trusted base policy
-        run: |
-          python trusted/gate/validate.py \
-            candidate/approval/manifest.json \
-            trusted/governance/state.json
+          printf 'changed files: %s\n' "$changed"
+          if [[ "$changed" == "approval/manifest.json" ]]; then
+            python trusted/gate/validate.py \
+              candidate/approval/manifest.json \
+              trusted/governance/state.json
+          elif [[ "$changed" == "governance/state.json" ]]; then
+            python trusted/gate/rotation.py \
+              trusted/governance/state.json \
+              candidate/governance/state.json
+          else
+            echo "DENY: only one of approval/manifest.json or governance/state.json may change" >&2
+            exit 1
+          fi
