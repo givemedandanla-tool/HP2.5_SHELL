@@ -1,12 +1,27 @@
 {
   "schema_version": "HP25_GOVERNANCE_STATE_V1",
   "mode": "EXPERIMENTAL_SPIKE",
-  "current_generation": 9,
+  "current_generation": 10,
   "policy_version": "HP25-GOVERNANCE-SHELL-POLICY-V1",
   "allowed_authority_ids": [
-    "HUMAN-20261006-ROOT-F-001-SCHEME-C-001"
+    "HUMAN-SCHEME-C-G10-F001-CODEX-20261008T153910Z"
   ],
   "approved_revision": null,
   "last_approval_id": null,
-  "note": "Synthetic Scheme C spike state only; not production approval."
+  "note": "Synthetic Scheme C spike state only; not production approval.",
+  "authority_envelopes": {
+    "HUMAN-SCHEME-C-G10-F001-CODEX-20261008T153910Z": {
+      "authority_id": "HUMAN-SCHEME-C-G10-F001-CODEX-20261008T153910Z",
+      "parent_authority_id": "HUMAN-OWNER",
+      "subject_id": "HP25-CODEX-ROOT-INTEGRATOR-G10-F001-20261008T153910Z",
+      "work_id": "HP25-PROGRESSIVE-SYSTEM-CONSOLIDATION-001",
+      "exact_subject": "4716ba9516d0b1612b15d9d187e70c240d3cc3d5",
+      "generation": 10,
+      "valid_from": "2026-10-08T15:39:10Z",
+      "valid_until": "2026-10-08T18:39:10Z",
+      "writer_subject": "HP25-CODEX-ROOT-INTEGRATOR-G10-F001-20261008T153910Z",
+      "independent_auditor_subject": "INDEPENDENT-ROOT-AUDITOR-G6-F001-20261008T101933+0800",
+      "independent_audit_receipt_sha256": "sha256:bec0bfc7952dbc1cb06c1cc6dbdb96e6a112c7b0131c5e9af96f54166f5b4863"
+    }
+  }
 }
