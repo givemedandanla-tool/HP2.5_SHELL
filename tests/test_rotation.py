@@ -204,7 +204,7 @@ class BotRestIdentityRegressionTests(unittest.TestCase):
     def setUpClass(cls):
         from pathlib import Path
         workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/governance-gate.yml").read_text("utf-8")
-        match = re.search(r"(?ms)^          verify_bot_pr_identity\\(\\) \\{\\n.*?^          \\}\\n", workflow)
+        match = re.search(r"(?ms)^          verify_bot_pr_identity\(\) \{\n.*?^          \}\n", workflow)
         if not match:
             raise AssertionError("trusted inline verifier is missing")
         cls.validator = textwrap.dedent(match.group(0))
@@ -226,7 +226,7 @@ class BotRestIdentityRegressionTests(unittest.TestCase):
         env = dict(os.environ)
         env.update({"PR_JSON": json.dumps(data), "EXPECTED_HEAD": self.head,
                     "ROTATION_BRANCH": self.branch, "GITHUB_REPOSITORY": self.repo})
-        script = "set -euo pipefail\\n" + self.validator + "\\nverify_bot_pr_identity \\"$PR_JSON\\"\\n"
+        script = "set -euo pipefail\n" + self.validator + "\nverify_bot_pr_identity \"$PR_JSON\"\n"
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
 
     def test_live_rest_bot_author_and_exact_draft_pr_accepted(self):
