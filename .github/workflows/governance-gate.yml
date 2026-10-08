@@ -2,12 +2,28 @@ name: Governance Gate
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'maintenance/**']
+  # Always use the protected default-branch workflow; never trust review-event
+  # workflows or candidate PR code for a required governance check.
   pull_request_target:
+    types: [opened, synchronize, reopened]
     branches: [main]
+  # Only the repository Owner can invoke this on the protected default branch.
+  # This becomes trusted ONLY after a separately reviewed, authorized merge.
+  workflow_dispatch:
+    inputs:
+      rotation_branch:
+        description: 'Pre-existing state-only branch (rotation/hp25-scheme-c-...)'
+        required: true
+        type: string
+      exact_head_sha:
+        description: 'Expected exact 40-hex state candidate HEAD'
+        required: true
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   trusted-self-test:
@@ -18,11 +34,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Compile trusted validator
-        run: python -m py_compile gate/approval_manifest.py gate/validate.py
+      - name: Compile and test trusted validators
+        run: |
+          python -m py_compile gate/approval_manifest.py gate/rotation.py gate/validate.py
+          python -m unittest discover -s tests -v
 
   governance-gate:
-    if: github.event_name == 'pull_request_target'
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'main'
     name: governance-gate
     runs-on: ubuntu-latest
     steps:
@@ -41,19 +59,75 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Restrict candidate changes to the approval manifest
+      - name: Validate strictly separated approval or state-rotation candidate
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROTATION_PR_NUMBER: ${{ github.event.pull_request.number }}
+          ROTATION_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROTATION_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git -C candidate fetch origin "$BASE_SHA" --depth=1
           changed="$(git -C candidate diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          printf '%s\n' "$changed"
-          test "$changed" = "approval/manifest.json"
+          printf 'changed files: %s\n' "$changed"
+          if [[ "$changed" == "approval/manifest.json" ]]; then
+            python trusted/gate/validate.py \
+              candidate/approval/manifest.json \
+              trusted/governance/state.json
+          elif [[ "$changed" == "governance/state.json" ]]; then
+            python trusted/gate/rotation.py \
+              trusted/governance/state.json \
+              candidate/governance/state.json
+          else
+            echo "DENY: only one of approval/manifest.json or governance/state.json may change" >&2
+            exit 1
+          fi
 
-      - name: Validate candidate manifest with trusted base policy
+  create-bot-rotation-pr:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    name: create-bot-rotation-pr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ROTATION_BRANCH: ${{ inputs.rotation_branch }}
+      EXPECTED_HEAD: ${{ inputs.exact_head_sha }}
+    steps:
+      - name: Validate pre-existing branch without executing candidate code
+        shell: bash
         run: |
-          python trusted/gate/validate.py \
-            candidate/approval/manifest.json \
-            trusted/governance/state.json
+          set -euo pipefail
+          [[ "$ROTATION_BRANCH" =~ ^rotation/hp25-scheme-c-[a-z0-9._-]{1,60}$ ]] || { echo "DENY: branch scope"; exit 1; }
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]] || { echo "DENY: exact SHA syntax"; exit 1; }
+          actual="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${ROTATION_BRANCH}" --jq '.commit.sha')"
+          [[ "$actual" == "$EXPECTED_HEAD" ]] || { echo "DENY: stale candidate SHA"; exit 1; }
+          comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${ROTATION_BRANCH}")"
+          changed="$(jq -r '[.files[].filename] | sort | join(",")' <<< "$comparison")"
+          ahead="$(jq -r '.ahead_by' <<< "$comparison")"
+          behind="$(jq -r '.behind_by' <<< "$comparison")"
+          [[ "$changed" == "governance/state.json" ]] || { echo "DENY: not state-only"; exit 1; }
+          [[ "$ahead" =~ ^[0-9]+$ && "$behind" == "0" ]] || { echo "DENY: divergent history"; exit 1; }
+          (( ahead > 0 )) || { echo "DENY: no candidate commit"; exit 1; }
+          already="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$ROTATION_BRANCH" --state open --json number --jq 'length')"
+          [[ "$already" == "0" ]] || { echo "DENY: PR already exists"; exit 1; }
+          echo "Preflight PASS for exact state-only candidate $actual"
+      - name: Create draft PR as GitHub Actions bot (never approve)
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${ROTATION_BRANCH}" --jq '.commit.sha')"
+          [[ "$actual" == "$EXPECTED_HEAD" ]] || { echo "DENY: SHA changed"; exit 1; }
+          url="$(gh pr create --repo "$GITHUB_REPOSITORY" --head "$ROTATION_BRANCH" --base main --draft \
+            --title "[HP2.5] Scheme C state-only rotation (bot identity verification)" \
+            --body "Bounded Scheme C state-only candidate. Created by trusted main workflow using GITHUB_TOKEN; requires separate GitHub Owner APPROVED review on exact head and independent required gate. Not a Scheme C PASS. Do not merge without independent authorization.")"
+          author="$(gh pr view "$url" --repo "$GITHUB_REPOSITORY" --json author --jq '.author.login')"
+          exact="$(gh pr view "$url" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')"
+          echo "CREATED_PR=$url AUTHOR=$author HEAD=$exact"
+          [[ "$author" == 'github-actions[bot]' && "$exact" == "$EXPECTED_HEAD" ]] || {
+            echo "DENY: actual PR author/head differs; do not review or merge"; exit 1;
+          }
+          echo "Bot identity verified; owner review and protected gate remain separate."
