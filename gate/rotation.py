@@ -23,6 +23,10 @@ ENVELOPE_KEYS = {
     "independent_audit_receipt_sha256",
 }
 STATE_CHANGES = {"current_generation", "allowed_authority_ids", "authority_envelopes"}
+EXPERIMENTAL_MODE = "EXPERIMENTAL_SPIKE"
+FORMAL_MODE = "FORMAL_SCHEME_C"
+# 固定說明只標示治理模式；它不是 Human review、來源證據或 production 授權。
+FORMAL_ADOPTION_NOTE = "正式 Scheme C 治理模式；精確版本批准與 production 啟用須另行授權。"
 
 def utc_time(value):
     if not isinstance(value, str):
@@ -95,6 +99,42 @@ def evaluate_rotation(before, after, now=None):
             reasons.append("authority_time_invalid")
     return {"allowed": not reasons, "reasons": sorted(set(reasons))}
 
+def evaluate_formal_adoption(before, after, now=None):
+    """只驗證單向正式採用資料；CLI 仍須另查 distinct Owner exact-head review。
+
+    一般 rotation 的 immutable mode 規則保持原樣。只有這個獨立 lifecycle
+    可改 mode 與固定 note；其餘 state、generation 與有限 Authority 規則全數
+    重用既有 rotation guards，不因採用而新增 approval 或繞過 fencing。
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return {"allowed": False, "reasons": ["state_not_object"]}
+    reasons = []
+    if before.get("mode") != EXPERIMENTAL_MODE:
+        reasons.append("formal_adoption_requires_experimental_base")
+    if after.get("mode") != FORMAL_MODE:
+        reasons.append("formal_adoption_requires_formal_target")
+    if after.get("note") != FORMAL_ADOPTION_NOTE:
+        reasons.append("formal_adoption_note")
+
+    # 只還原本 lifecycle 明確允許的兩個欄位；不修改 caller 的 candidate。
+    # 原 guards 仍拒絕 policy、approved revision、last approval、額外欄位等變更。
+    normalized = dict(after)
+    normalized["mode"] = before.get("mode")
+    normalized["note"] = before.get("note")
+    reasons.extend(evaluate_rotation(before, normalized, now)["reasons"])
+    return {"allowed": not reasons, "reasons": sorted(set(reasons))}
+
+def evaluate_state_change(before, after, now=None):
+    """mode 變更才進正式 lifecycle；note／候選宣告不能選擇正式 route。"""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return {"allowed": False, "reasons": ["state_not_object"]}
+    if before.get("mode") != after.get("mode"):
+        return evaluate_formal_adoption(before, after, now)
+    if before.get("mode") not in (EXPERIMENTAL_MODE, FORMAL_MODE):
+        return {"allowed": False, "reasons": ["unsupported_state_mode"]}
+    # 正式模式下仍可輪替有限 Authority，但不代表再次採用或批准新版本。
+    return evaluate_rotation(before, after, now)
+
 def owner_exact_review(reviews, owner, author, head):
     if not owner or not author or not SHA40.fullmatch(str(head)):
         return False
@@ -137,7 +177,7 @@ def main():
     try:
         before = json.loads(Path(sys.argv[1]).read_text("utf-8"))
         after = json.loads(Path(sys.argv[2]).read_text("utf-8"))
-        decision = evaluate_rotation(before, after)
+        decision = evaluate_state_change(before, after)
         repo = os.environ["GITHUB_REPOSITORY"]
         owner = repo.split("/")[0]
         pr_number = os.environ["ROTATION_PR_NUMBER"]

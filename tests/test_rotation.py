@@ -11,7 +11,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "gate"))
-from rotation import evaluate_rotation, owner_exact_review
+from rotation import (evaluate_rotation, owner_exact_review,
+                      evaluate_formal_adoption, evaluate_state_change,
+                      FORMAL_ADOPTION_NOTE)
 from approval_manifest import evaluate, compute_manifest_sha256
 
 HEAD = "a" * 40
@@ -380,6 +382,222 @@ class ApprovalEnvelopeTests(unittest.TestCase):
     def test_tampered_manifest_hash_rejected(self):
         self.manifest["manifest_sha256"] = "sha256:" + "0" * 64
         self.assertFalse(evaluate(self.manifest, self.state)["allowed"])
+
+class FormalAdoptionTests(unittest.TestCase):
+    """正式採用與一般輪替分開；所有有限 Authority guard 必須繼續生效。"""
+
+    def setUp(self):
+        fixture = RotationTests()
+        fixture.setUp()
+        self.now = fixture.now
+        self.old = fixture.old
+        self.new = fixture.new
+        self.new["mode"] = "FORMAL_SCHEME_C"
+        self.new["note"] = FORMAL_ADOPTION_NOTE
+
+    def envelope(self):
+        return next(iter(self.new["authority_envelopes"].values()))
+
+    def assert_denied(self, reason):
+        decision = evaluate_state_change(self.old, self.new, self.now)
+        self.assertFalse(decision["allowed"])
+        self.assertIn(reason, decision["reasons"])
+
+    def test_single_forward_adoption_routes_and_preserves_input(self):
+        before, after = copy.deepcopy(self.old), copy.deepcopy(self.new)
+        self.assertTrue(evaluate_formal_adoption(self.old, self.new, self.now)["allowed"])
+        self.assertTrue(evaluate_state_change(self.old, self.new, self.now)["allowed"])
+        self.assertEqual(self.old, before)
+        self.assertEqual(self.new, after)
+
+    def test_direct_ordinary_rotation_still_denies_mode_and_note(self):
+        decision = evaluate_rotation(self.old, self.new, self.now)
+        self.assertFalse(decision["allowed"])
+        self.assertIn("immutable_field_changed:mode", decision["reasons"])
+        self.assertIn("immutable_field_changed:note", decision["reasons"])
+
+    def test_fixed_note_required(self):
+        for note in (None, "", "Formally approved by note", FORMAL_ADOPTION_NOTE + " "):
+            with self.subTest(note=note):
+                self.new["note"] = note
+                self.assert_denied("formal_adoption_note")
+
+    def test_note_cannot_select_formal_route(self):
+        self.new["mode"] = "EXPERIMENTAL_SPIKE"
+        self.assert_denied("immutable_field_changed:note")
+
+    def test_unknown_or_missing_modes_denied(self):
+        for mode in (None, "ALMOST_FORMAL", {}, True):
+            with self.subTest(target=mode):
+                self.new["mode"] = mode
+                self.assert_denied("formal_adoption_requires_formal_target")
+            with self.subTest(base=mode):
+                self.old["mode"] = mode
+                self.new["mode"] = "FORMAL_SCHEME_C"
+                self.assert_denied("formal_adoption_requires_experimental_base")
+                self.old["mode"] = "EXPERIMENTAL_SPIKE"
+        self.new.pop("mode")
+        self.assert_denied("formal_adoption_requires_formal_target")
+
+    def test_unknown_unchanged_mode_not_an_ordinary_rotation(self):
+        self.old["mode"] = self.new["mode"] = "ALMOST_FORMAL"
+        self.assert_denied("unsupported_state_mode")
+
+    def test_downgrade_and_repeat_adoption_denied(self):
+        self.old["mode"] = "FORMAL_SCHEME_C"
+        self.new["mode"] = "EXPERIMENTAL_SPIKE"
+        self.assert_denied("formal_adoption_requires_experimental_base")
+        self.new["mode"] = "FORMAL_SCHEME_C"
+        decision = evaluate_formal_adoption(self.old, self.new, self.now)
+        self.assertFalse(decision["allowed"])
+        self.assertIn("formal_adoption_requires_experimental_base", decision["reasons"])
+
+    def test_formal_mode_can_rotate_authority_without_new_adoption(self):
+        self.old["mode"] = "FORMAL_SCHEME_C"
+        self.old["note"] = FORMAL_ADOPTION_NOTE
+        self.assertTrue(evaluate_state_change(self.old, self.new, self.now)["allowed"])
+
+    def test_generation_must_increment_exactly_once(self):
+        for generation in (9, 11, True):
+            with self.subTest(generation=generation):
+                self.new["current_generation"] = generation
+                self.assert_denied("generation_not_incremented_exactly_once")
+
+    def test_approval_policy_history_and_extra_fields_remain_immutable(self):
+        for field, value, reason in (
+            ("approved_revision", HEAD, "immutable_field_changed:approved_revision"),
+            ("last_approval_id", "approval-1", "immutable_field_changed:last_approval_id"),
+            ("policy_version", "UNREVIEWED", "immutable_field_changed:policy_version"),
+            ("schema_version", "UNKNOWN", "immutable_field_changed:schema_version"),
+            ("manifest", {}, "unexpected_state_keys"),
+            ("bypass", True, "unexpected_state_keys"),
+        ):
+            with self.subTest(field=field):
+                original = copy.deepcopy(self.new)
+                self.new[field] = value
+                self.assert_denied(reason)
+                self.new = original
+        self.old["used_authority_ids"] = ["HUMAN-OLD"]
+        self.new["used_authority_ids"] = []
+        self.assert_denied("immutable_field_changed:used_authority_ids")
+
+    def test_existing_approval_is_preserved_not_reissued(self):
+        self.old["approved_revision"] = self.new["approved_revision"] = HEAD
+        self.old["last_approval_id"] = self.new["last_approval_id"] = "historical-approval"
+        self.assertTrue(evaluate_state_change(self.old, self.new, self.now)["allowed"])
+
+    def test_missing_or_extra_authority_envelope_denied(self):
+        self.new["authority_envelopes"] = {}
+        self.assert_denied("authority_envelope_set_mismatch")
+        self.setUp()
+        self.envelope()["approval"] = True
+        self.assert_denied("authority_envelope_shape")
+
+    def test_authority_identity_and_receipt_guards_reused(self):
+        for field, value, reason in (
+            ("parent_authority_id", "SELF", "authority_parent_or_id"),
+            ("generation", 11, "authority_generation"),
+            ("work_id", "OTHER", "authority_work"),
+            ("exact_subject", "not-a-commit", "authority_exact_subject"),
+            ("subject_id", "", "authority_subject"),
+            ("independent_auditor_subject", "WRITER-A", "writer_equals_auditor"),
+            ("independent_audit_receipt_sha256", "unverified", "audit_receipt_digest"),
+        ):
+            with self.subTest(field=field):
+                original = copy.deepcopy(self.new)
+                self.envelope()[field] = value
+                self.assert_denied(reason)
+                self.new = original
+
+    def test_finite_authority_time_guards_reused(self):
+        for end in (self.now, self.now - timedelta(seconds=1), self.now + timedelta(days=2)):
+            with self.subTest(end=end):
+                self.envelope()["valid_until"] = end.isoformat()
+                self.assert_denied("authority_lifetime")
+        self.envelope()["valid_until"] = "invalid-time"
+        self.assert_denied("authority_time_invalid")
+
+    def test_generation_bound_authority_id_guard_reused(self):
+        for aid in ("HUMAN-OLD", "HUMAN-SCHEME-C-G9-UNIQUE0001", "HUMAN-UNBOUND-UNIQUE0001"):
+            with self.subTest(authority=aid):
+                original = copy.deepcopy(self.new)
+                envelope = self.new["authority_envelopes"].pop(self.new["allowed_authority_ids"][0])
+                envelope["authority_id"] = aid
+                self.new["allowed_authority_ids"] = [aid]
+                self.new["authority_envelopes"] = {aid: envelope}
+                self.assert_denied("authority_id_generation_binding")
+                self.new = original
+
+    def test_non_object_state_denied(self):
+        for before, after in ((None, self.new), (self.old, [])):
+            with self.subTest(before=before, after=after):
+                self.assertEqual(evaluate_state_change(before, after, self.now),
+                                 {"allowed": False, "reasons": ["state_not_object"]})
+
+class FormalAdoptionCliTests(unittest.TestCase):
+    """實際 CLI 路徑必須驗證 authenticated review；資料 evaluator 不授權 merge。"""
+
+    setUp = FormalAdoptionTests.setUp
+
+    def run_cli(self, reviews, author="trusted-bot"):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+        from unittest.mock import patch
+        from rotation import main
+        with tempfile.TemporaryDirectory() as directory:
+            before = Path(directory) / "trusted.json"
+            after = Path(directory) / "candidate.json"
+            before.write_text(json.dumps(self.old), encoding="utf-8")
+            after.write_text(json.dumps(self.new), encoding="utf-8")
+            output = io.StringIO()
+            environment = {
+                "GITHUB_REPOSITORY": "governance-owner/public-shell",
+                "GITHUB_TOKEN": "synthetic-test-token",
+                "ROTATION_PR_NUMBER": "1", "ROTATION_HEAD_SHA": HEAD,
+                "ROTATION_PR_AUTHOR": author,
+            }
+            with patch.dict(os.environ, environment), patch.object(sys, "argv", ["rotation.py", str(before), str(after)]), \
+                    patch("rotation.fetch_reviews", return_value=reviews) as fetch, redirect_stdout(output):
+                with self.assertRaises(SystemExit) as exit_result:
+                    main()
+            fetch.assert_called_once_with("governance-owner/public-shell", "1", "synthetic-test-token")
+            return exit_result.exception.code, json.loads(output.getvalue())
+
+    def review(self, **changes):
+        review = {"id": 100, "state": "APPROVED", "commit_id": HEAD,
+                  "user": {"login": "governance-owner"}}
+        review.update(changes)
+        return review
+
+    def test_cli_forward_adoption_requires_distinct_exact_owner_review(self):
+        code, decision = self.run_cli([self.review()])
+        self.assertEqual(code, 0)
+        self.assertTrue(decision["allowed"])
+
+    def test_cli_missing_stale_other_or_dismissed_review_denied(self):
+        cases = (
+            [], [self.review(commit_id="b" * 40)],
+            [self.review(user={"login": "other-reviewer"})],
+            [self.review(), self.review(id=101, state="DISMISSED")],
+        )
+        for reviews in cases:
+            with self.subTest(reviews=reviews):
+                code, decision = self.run_cli(reviews)
+                self.assertEqual(code, 1)
+                self.assertIn("missing_distinct_owner_exact_head_approval", decision["reasons"])
+
+    def test_cli_owner_self_approval_denied(self):
+        code, decision = self.run_cli([self.review()], author="governance-owner")
+        self.assertEqual(code, 1)
+        self.assertIn("missing_distinct_owner_exact_head_approval", decision["reasons"])
+
+    def test_cli_owner_review_cannot_override_invalid_transition(self):
+        self.new["approved_revision"] = HEAD
+        code, decision = self.run_cli([self.review()])
+        self.assertEqual(code, 1)
+        self.assertIn("immutable_field_changed:approved_revision", decision["reasons"])
 
 if __name__ == "__main__":
     unittest.main()
